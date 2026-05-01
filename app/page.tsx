@@ -1,7 +1,10 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
+import * as XLSX from "xlsx";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 interface Student {
@@ -62,14 +65,54 @@ interface ToastItem {
   type: "success" | "error";
 }
 
-type Tab = "dashboard" | "students" | "classes" | "grades" | "analytics" | "settings";
+interface AttendanceRecord {
+  _id: string;
+  student: Student;
+  course: Course;
+  date: string;
+  status: "present" | "absent" | "late" | "excused";
+  note: string;
+}
+
+interface Payment {
+  _id: string;
+  amount: number;
+  date: string;
+  note: string;
+}
+
+interface Fee {
+  _id: string;
+  student: Student;
+  description: string;
+  category: "tuition" | "registration" | "lab" | "library" | "sports" | "other";
+  totalAmount: number;
+  paidAmount: number;
+  dueDate?: string;
+  semester?: "Fall" | "Spring";
+  year?: number;
+  payments: Payment[];
+  status: "paid" | "partial" | "unpaid";
+}
+
+interface FeeFormData {
+  studentId: string;
+  description: string;
+  category: string;
+  totalAmount: string;
+  dueDate: string;
+  semester: string;
+  year: string;
+}
+
+type Tab = "dashboard" | "students" | "classes" | "grades" | "attendance" | "fees" | "analytics" | "settings";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const AVATAR_COLORS = [
   "bg-violet-500", "bg-blue-500", "bg-emerald-500", "bg-amber-500",
-  "bg-rose-500", "bg-cyan-500", "bg-pink-500", "bg-indigo-500",
+  "bg-rose-500", "bg-cyan-500", "bg-pink-500", "bg-teal-500",
 ];
 
 const GRADE_LABELS: Record<number, { short: string; full: string }> = {
@@ -117,6 +160,82 @@ function formatGPA(gpa: number | null | undefined): string {
   return gpa.toFixed(2);
 }
 
+const ATTENDANCE_STATUS = {
+  present: { label: "Present", color: "bg-emerald-100 text-emerald-700" },
+  late:    { label: "Late",    color: "bg-amber-100 text-amber-700"    },
+  absent:  { label: "Absent",  color: "bg-red-100 text-red-700"        },
+  excused: { label: "Excused", color: "bg-blue-100 text-blue-700"      },
+} as const;
+
+const FEE_CATEGORIES = ["tuition", "registration", "lab", "library", "sports", "other"] as const;
+
+// ── Export utilities ───────────────────────────────────────────────────────
+function downloadExcel(filename: string, headers: string[], rows: (string | number | null | undefined)[][]) {
+  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows.map((r) => r.map((v) => v ?? ""))]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Data");
+  XLSX.writeFile(wb, `${filename}.xlsx`);
+}
+
+function downloadPDF(filename: string, title: string, headers: string[], rows: (string | number | null | undefined)[][]) {
+  const doc = new jsPDF();
+  doc.setFontSize(16);
+  doc.setTextColor(5, 150, 105);
+  doc.text(title, 14, 18);
+  doc.setFontSize(9);
+  doc.setTextColor(120);
+  doc.text(`Exported: ${new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}`, 14, 26);
+  autoTable(doc, {
+    head: [headers],
+    body: rows.map((r) => r.map((v) => String(v ?? ""))),
+    startY: 32,
+    styles: { fontSize: 9, cellPadding: 3 },
+    headStyles: { fillColor: [5, 150, 105], textColor: 255, fontStyle: "bold" },
+    alternateRowStyles: { fillColor: [240, 253, 250] },
+  });
+  doc.save(`${filename}.pdf`);
+}
+
+// ── ExportButton ───────────────────────────────────────────────────────────
+function ExportButton({ onExcelClick, onPDFClick, disabled = false }: {
+  onExcelClick: () => void;
+  onPDFClick: () => void;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function outside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    if (open) document.addEventListener("mousedown", outside);
+    return () => document.removeEventListener("mousedown", outside);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        disabled={disabled}
+        className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 text-slate-700 text-sm font-medium hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+      >
+        ↓ Export
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 w-44 bg-white rounded-xl border border-slate-100 shadow-xl z-30 overflow-hidden">
+          <button onClick={() => { onExcelClick(); setOpen(false); }} className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 transition-colors text-left">
+            📊 Excel (.xlsx)
+          </button>
+          <button onClick={() => { onPDFClick(); setOpen(false); }} className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 transition-colors text-left">
+            📄 PDF
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Sidebar ────────────────────────────────────────────────────────────────
 function Sidebar({
   activeTab, onTabChange, onLogout,
@@ -126,19 +245,21 @@ function Sidebar({
   onLogout: () => void;
 }) {
   const navItems: { id: Tab; label: string; icon: string }[] = [
-    { id: "dashboard", label: "Dashboard",  icon: "▦"  },
-    { id: "students",  label: "Students",   icon: "👥" },
-    { id: "classes",   label: "Classes",    icon: "🏫" },
-    { id: "grades",    label: "Grades",     icon: "📝" },
-    { id: "analytics", label: "Analytics",  icon: "📊" },
-    { id: "settings",  label: "Settings",   icon: "⚙️" },
+    { id: "dashboard",  label: "Dashboard",  icon: "▦"  },
+    { id: "students",   label: "Students",   icon: "👥" },
+    { id: "classes",    label: "Classes",    icon: "🏫" },
+    { id: "grades",     label: "Grades",     icon: "📝" },
+    { id: "attendance", label: "Attendance", icon: "📅" },
+    { id: "fees",       label: "Fees",       icon: "💰" },
+    { id: "analytics",  label: "Analytics",  icon: "📊" },
+    { id: "settings",   label: "Settings",   icon: "⚙️" },
   ];
 
   return (
     <aside className="w-64 bg-slate-900 flex flex-col h-screen fixed left-0 top-0 z-20 flex-shrink-0">
       <div className="p-6 border-b border-slate-800">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 bg-indigo-500 rounded-xl flex items-center justify-center text-white font-bold text-sm shadow-md">
+          <div className="w-9 h-9 bg-emerald-600 rounded-xl flex items-center justify-center text-white font-bold text-sm shadow-md">
             S
           </div>
           <div>
@@ -156,7 +277,7 @@ function Sidebar({
             onClick={() => onTabChange(item.id)}
             className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium cursor-pointer transition-colors text-left ${
               activeTab === item.id
-                ? "bg-indigo-600 text-white shadow-sm"
+                ? "bg-emerald-600 text-white shadow-sm"
                 : "text-slate-400 hover:bg-slate-800 hover:text-white"
             }`}
           >
@@ -168,7 +289,7 @@ function Sidebar({
 
       <div className="p-4 border-t border-slate-800 space-y-1">
         <div className="flex items-center gap-3 px-3 py-2">
-          <div className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+          <div className="w-8 h-8 rounded-full bg-emerald-500 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
             AD
           </div>
           <div className="flex-1 min-w-0">
@@ -262,7 +383,7 @@ function StudentModal({
         className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none transition-all ${
           errors[key]
             ? "border-red-400 bg-red-50 focus:ring-2 focus:ring-red-100"
-            : "border-slate-200 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+            : "border-slate-200 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
         }`}
       />
       {errors[key] && <p className="text-red-500 text-xs mt-1">{errors[key]}</p>}
@@ -295,7 +416,7 @@ function StudentModal({
                 className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none transition-all ${
                   errors.gradeLevel
                     ? "border-red-400 bg-red-50"
-                    : "border-slate-200 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+                    : "border-slate-200 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
                 }`}
               >
                 <option value="">Select grade</option>
@@ -311,7 +432,7 @@ function StudentModal({
             <button type="button" onClick={onClose} className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 text-slate-700 text-sm font-medium hover:bg-slate-50 transition-colors">
               Cancel
             </button>
-            <button type="submit" disabled={saving} className="flex-1 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium transition-colors disabled:opacity-60 shadow-sm">
+            <button type="submit" disabled={saving} className="flex-1 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium transition-colors disabled:opacity-60 shadow-sm">
               {saving ? "Saving…" : editing ? "Save Changes" : "Add Student"}
             </button>
           </div>
@@ -388,26 +509,26 @@ function CourseModal({
         <form onSubmit={submit} className="px-6 py-5 space-y-4">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">Course Name</label>
-            <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Algebra II" className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none transition-all ${errors.name ? "border-red-400 bg-red-50" : "border-slate-200 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"}`} />
+            <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Algebra II" className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none transition-all ${errors.name ? "border-red-400 bg-red-50" : "border-slate-200 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"}`} />
             {errors.name && <p className="text-red-500 text-xs mt-1">{errors.name}</p>}
           </div>
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">Subject</label>
-            <input type="text" value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} placeholder="e.g. Mathematics" className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none transition-all ${errors.subject ? "border-red-400 bg-red-50" : "border-slate-200 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"}`} />
+            <input type="text" value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} placeholder="e.g. Mathematics" className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none transition-all ${errors.subject ? "border-red-400 bg-red-50" : "border-slate-200 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"}`} />
             {errors.subject && <p className="text-red-500 text-xs mt-1">{errors.subject}</p>}
           </div>
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">Teacher Name</label>
-            <input type="text" value={form.teacherName} onChange={(e) => setForm({ ...form, teacherName: e.target.value })} placeholder="e.g. Mr. Johnson" className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none transition-all ${errors.teacherName ? "border-red-400 bg-red-50" : "border-slate-200 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"}`} />
+            <input type="text" value={form.teacherName} onChange={(e) => setForm({ ...form, teacherName: e.target.value })} placeholder="e.g. Mr. Johnson" className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none transition-all ${errors.teacherName ? "border-red-400 bg-red-50" : "border-slate-200 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"}`} />
             {errors.teacherName && <p className="text-red-500 text-xs mt-1">{errors.teacherName}</p>}
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Grade Level</label>
-              <select value={form.gradeLevel} onChange={(e) => setForm({ ...form, gradeLevel: e.target.value })} className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none transition-all ${errors.gradeLevel ? "border-red-400 bg-red-50" : "border-slate-200 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"}`}>
+              <select value={form.gradeLevel} onChange={(e) => setForm({ ...form, gradeLevel: e.target.value })} className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none transition-all ${errors.gradeLevel ? "border-red-400 bg-red-50" : "border-slate-200 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"}`}>
                 <option value="">Select grade</option>
                 {[9, 10, 11, 12].map((g) => <option key={g} value={g}>{GRADE_LABELS[g].full}</option>)}
               </select>
@@ -415,7 +536,7 @@ function CourseModal({
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Period</label>
-              <select value={form.period} onChange={(e) => setForm({ ...form, period: e.target.value })} className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-all">
+              <select value={form.period} onChange={(e) => setForm({ ...form, period: e.target.value })} className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all">
                 <option value="">Select period</option>
                 {[1,2,3,4,5,6,7,8].map((p) => <option key={p} value={p}>Period {p}</option>)}
               </select>
@@ -425,30 +546,30 @@ function CourseModal({
           <div className="grid grid-cols-3 gap-3">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Semester</label>
-              <select value={form.semester} onChange={(e) => setForm({ ...form, semester: e.target.value })} className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-all">
+              <select value={form.semester} onChange={(e) => setForm({ ...form, semester: e.target.value })} className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all">
                 <option value="Fall">Fall</option>
                 <option value="Spring">Spring</option>
               </select>
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Year</label>
-              <input type="number" value={form.year} onChange={(e) => setForm({ ...form, year: e.target.value })} min="2000" max="2100" className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none transition-all ${errors.year ? "border-red-400 bg-red-50" : "border-slate-200 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"}`} />
+              <input type="number" value={form.year} onChange={(e) => setForm({ ...form, year: e.target.value })} min="2000" max="2100" className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none transition-all ${errors.year ? "border-red-400 bg-red-50" : "border-slate-200 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"}`} />
               {errors.year && <p className="text-red-500 text-xs mt-1">{errors.year}</p>}
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Credits</label>
-              <input type="number" value={form.credits} onChange={(e) => setForm({ ...form, credits: e.target.value })} min="0.5" max="4" step="0.5" className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-all" />
+              <input type="number" value={form.credits} onChange={(e) => setForm({ ...form, credits: e.target.value })} min="0.5" max="4" step="0.5" className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all" />
             </div>
           </div>
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">Description <span className="text-slate-400 font-normal">(optional)</span></label>
-            <textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Brief course description…" rows={2} className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-all resize-none" />
+            <textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Brief course description…" rows={2} className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all resize-none" />
           </div>
 
           <div className="flex gap-3 pt-1">
             <button type="button" onClick={onClose} className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 text-slate-700 text-sm font-medium hover:bg-slate-50 transition-colors">Cancel</button>
-            <button type="submit" disabled={saving} className="flex-1 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium transition-colors disabled:opacity-60 shadow-sm">
+            <button type="submit" disabled={saving} className="flex-1 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium transition-colors disabled:opacity-60 shadow-sm">
               {saving ? "Saving…" : editing ? "Save Changes" : "Add Course"}
             </button>
           </div>
@@ -508,7 +629,7 @@ function Toasts({ items, onRemove }: { items: ToastItem[]; onRemove: (id: number
 // ── SortIcon ───────────────────────────────────────────────────────────────
 function SortIcon({ active, dir }: { active: boolean; dir: "asc" | "desc" }) {
   return (
-    <span className={`ml-1 text-xs ${active ? "text-indigo-500" : "text-slate-300"}`}>
+    <span className={`ml-1 text-xs ${active ? "text-emerald-500" : "text-slate-300"}`}>
       {active ? (dir === "asc" ? "↑" : "↓") : "↕"}
     </span>
   );
@@ -539,14 +660,14 @@ function DashboardView({
 
   return (
     <div className="flex-1 overflow-auto p-8">
-      <div className="bg-gradient-to-r from-indigo-600 to-indigo-700 rounded-2xl p-6 mb-8 text-white shadow-lg shadow-indigo-500/20">
-        <p className="text-indigo-200 text-sm">{today}</p>
+      <div className="bg-gradient-to-r from-emerald-600 to-emerald-700 rounded-2xl p-6 mb-8 text-white shadow-lg shadow-emerald-500/20">
+        <p className="text-emerald-200 text-sm">{today}</p>
         <h2 className="text-2xl font-bold mt-1">Welcome back, Administrator!</h2>
-        <p className="text-indigo-200 text-sm mt-1">Here&apos;s an overview of your high school management system.</p>
+        <p className="text-emerald-200 text-sm mt-1">Here&apos;s an overview of your high school management system.</p>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        <StatCard label="Total Students" value={stats.total}   icon="👥" bg="bg-indigo-50"  sub="Enrolled" />
+        <StatCard label="Total Students" value={stats.total}   icon="👥" bg="bg-emerald-50"  sub="Enrolled" />
         <StatCard label="Total Courses"  value={stats.courses} icon="🏫" bg="bg-violet-50"  sub="Active"   />
         <StatCard label="Average GPA"    value={stats.avgGPA}  icon="📊" bg="bg-emerald-50" sub="Across all grades" />
         <StatCard label="Grade Levels"   value="9–12"          icon="🎓" bg="bg-amber-50"   sub="Freshman–Senior" />
@@ -556,7 +677,7 @@ function DashboardView({
         <div className="bg-white rounded-2xl border border-slate-100 shadow-sm">
           <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
             <h3 className="font-semibold text-slate-900">Recent Students</h3>
-            <button onClick={onGoToStudents} className="text-indigo-600 hover:text-indigo-700 text-sm font-medium">View all →</button>
+            <button onClick={onGoToStudents} className="text-emerald-600 hover:text-emerald-700 text-sm font-medium">View all →</button>
           </div>
           <div className="divide-y divide-slate-50">
             {recent.length === 0 ? (
@@ -581,9 +702,9 @@ function DashboardView({
         <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6">
           <h3 className="font-semibold text-slate-900 mb-4">Quick Actions</h3>
           <div className="space-y-3">
-            <button onClick={onAddStudent} className="w-full flex items-center gap-3 p-3.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-left transition-colors">
+            <button onClick={onAddStudent} className="w-full flex items-center gap-3 p-3.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-left transition-colors">
               <span className="text-xl">➕</span>
-              <div><p className="text-sm font-medium text-indigo-700">Add New Student</p><p className="text-xs text-indigo-400">Register a new student record</p></div>
+              <div><p className="text-sm font-medium text-emerald-700">Add New Student</p><p className="text-xs text-emerald-400">Register a new student record</p></div>
             </button>
             <button onClick={onGoToClasses} className="w-full flex items-center gap-3 p-3.5 rounded-xl bg-slate-50 hover:bg-slate-100 text-left transition-colors">
               <span className="text-xl">🏫</span>
@@ -657,18 +778,31 @@ function StudentsView({
             <input
               type="text" placeholder="Search by name or email…" value={search}
               onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-              className="w-full pl-10 pr-9 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-all"
+              className="w-full pl-10 pr-9 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all"
             />
             {search && (
               <button onClick={() => { setSearch(""); setPage(1); }} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs">✕</button>
             )}
           </div>
           <span className="text-slate-400 text-sm whitespace-nowrap">{filtered.length} {filtered.length === 1 ? "student" : "students"}</span>
+          <ExportButton
+            disabled={filtered.length === 0}
+            onExcelClick={() => {
+              const headers = ["Student ID", "Name", "Email", "Grade Level", "GPA", "Age"];
+              const rows = filtered.map((s) => [s.studentId ?? "", s.name, s.email, GRADE_LABELS[s.gradeLevel]?.full ?? String(s.gradeLevel), formatGPA(s.gpa), s.age]);
+              downloadExcel("Students", headers, rows);
+            }}
+            onPDFClick={() => {
+              const headers = ["ID", "Name", "Email", "Grade Level", "GPA"];
+              const rows = filtered.map((s) => [s.studentId ?? "—", s.name, s.email, GRADE_LABELS[s.gradeLevel]?.full ?? String(s.gradeLevel), formatGPA(s.gpa)]);
+              downloadPDF("Students", "Student Directory", headers, rows);
+            }}
+          />
         </div>
 
         {fetching ? (
           <div className="py-24 flex flex-col items-center gap-4 text-slate-400">
-            <div className="w-8 h-8 border-[3px] border-indigo-500 border-t-transparent rounded-full animate-spin" />
+            <div className="w-8 h-8 border-[3px] border-emerald-500 border-t-transparent rounded-full animate-spin" />
             <p className="text-sm">Loading students…</p>
           </div>
         ) : filtered.length === 0 ? (
@@ -684,7 +818,7 @@ function StudentsView({
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-100">
                     {cols.map(({ label, field }) => (
-                      <th key={field} onClick={() => toggleSort(field)} className="text-left px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider cursor-pointer hover:text-indigo-600 transition-colors select-none">
+                      <th key={field} onClick={() => toggleSort(field)} className="text-left px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider cursor-pointer hover:text-emerald-600 transition-colors select-none">
                         {label}<SortIcon active={sortField === field} dir={sortDir} />
                       </th>
                     ))}
@@ -725,7 +859,7 @@ function StudentsView({
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex items-center justify-end gap-2">
-                          <button onClick={() => onEdit(s)} className="px-3 py-1.5 rounded-lg text-xs font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors">Edit</button>
+                          <button onClick={() => onEdit(s)} className="px-3 py-1.5 rounded-lg text-xs font-medium text-emerald-600 bg-emerald-50 hover:bg-emerald-100 transition-colors">Edit</button>
                           <button onClick={() => onDelete(s)} className="px-3 py-1.5 rounded-lg text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 transition-colors">Delete</button>
                         </div>
                       </td>
@@ -750,7 +884,7 @@ function StudentsView({
                     }, [])
                     .map((p, i) => p === "…"
                       ? <span key={`e${i}`} className="px-2 text-slate-400 text-sm">…</span>
-                      : <button key={p} onClick={() => setPage(p as number)} className={`w-9 py-1.5 rounded-lg border text-sm transition-colors ${page === p ? "bg-indigo-600 border-indigo-600 text-white shadow-sm" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>{p}</button>
+                      : <button key={p} onClick={() => setPage(p as number)} className={`w-9 py-1.5 rounded-lg border text-sm transition-colors ${page === p ? "bg-emerald-600 border-emerald-600 text-white shadow-sm" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>{p}</button>
                     )}
                   <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages} className="px-3 py-1.5 rounded-lg border border-slate-200 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">→</button>
                 </div>
@@ -785,12 +919,12 @@ function ClassesView({
   return (
     <div className="flex-1 overflow-auto p-8">
       <div className="flex items-center gap-3 mb-6 flex-wrap">
-        <select value={filterSemester} onChange={(e) => setFilterSemester(e.target.value)} className="px-3 py-2 rounded-xl border border-slate-200 text-sm outline-none focus:border-indigo-400 transition-all bg-white">
+        <select value={filterSemester} onChange={(e) => setFilterSemester(e.target.value)} className="px-3 py-2 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 transition-all bg-white">
           <option value="">All Semesters</option>
           <option value="Fall">Fall</option>
           <option value="Spring">Spring</option>
         </select>
-        <select value={filterGradeLevel} onChange={(e) => setFilterGradeLevel(e.target.value)} className="px-3 py-2 rounded-xl border border-slate-200 text-sm outline-none focus:border-indigo-400 transition-all bg-white">
+        <select value={filterGradeLevel} onChange={(e) => setFilterGradeLevel(e.target.value)} className="px-3 py-2 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 transition-all bg-white">
           <option value="">All Grade Levels</option>
           {[9, 10, 11, 12].map((g) => <option key={g} value={g}>{GRADE_LABELS[g].full}</option>)}
         </select>
@@ -799,7 +933,7 @@ function ClassesView({
 
       {fetching ? (
         <div className="py-24 flex flex-col items-center gap-4 text-slate-400">
-          <div className="w-8 h-8 border-[3px] border-indigo-500 border-t-transparent rounded-full animate-spin" />
+          <div className="w-8 h-8 border-[3px] border-emerald-500 border-t-transparent rounded-full animate-spin" />
           <p className="text-sm">Loading courses…</p>
         </div>
       ) : filtered.length === 0 ? (
@@ -824,7 +958,7 @@ function ClassesView({
                   <tr key={c._id} className="border-b border-slate-50 hover:bg-slate-50/70 transition-colors">
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-3">
-                        <div className="w-9 h-9 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600 font-bold text-xs flex-shrink-0">
+                        <div className="w-9 h-9 rounded-xl bg-emerald-50 flex items-center justify-center text-emerald-600 font-bold text-xs flex-shrink-0">
                           {c.subject.slice(0, 2).toUpperCase()}
                         </div>
                         <div>
@@ -852,7 +986,7 @@ function ClassesView({
                     <td className="px-6 py-4">
                       <div className="flex items-center justify-end gap-2">
                         <button onClick={() => onViewGrades(c._id)} className="px-3 py-1.5 rounded-lg text-xs font-medium text-emerald-600 bg-emerald-50 hover:bg-emerald-100 transition-colors">Grades</button>
-                        <button onClick={() => onEdit(c)} className="px-3 py-1.5 rounded-lg text-xs font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors">Edit</button>
+                        <button onClick={() => onEdit(c)} className="px-3 py-1.5 rounded-lg text-xs font-medium text-emerald-600 bg-emerald-50 hover:bg-emerald-100 transition-colors">Edit</button>
                         <button onClick={() => onDelete(c)} className="px-3 py-1.5 rounded-lg text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 transition-colors">Delete</button>
                       </div>
                     </td>
@@ -987,7 +1121,7 @@ function GradesView({
         <select
           value={selectedCourseId}
           onChange={(e) => setSelectedCourseId(e.target.value)}
-          className="w-full max-w-lg px-4 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-all bg-white"
+          className="w-full max-w-lg px-4 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all bg-white"
         >
           <option value="">— Choose a course —</option>
           {courses.map((c) => (
@@ -1006,7 +1140,7 @@ function GradesView({
         </div>
       ) : fetching ? (
         <div className="py-16 flex items-center justify-center gap-3 text-slate-400">
-          <div className="w-7 h-7 border-[3px] border-indigo-500 border-t-transparent rounded-full animate-spin" />
+          <div className="w-7 h-7 border-[3px] border-emerald-500 border-t-transparent rounded-full animate-spin" />
           <p className="text-sm">Loading enrollments…</p>
         </div>
       ) : selectedCourse && (
@@ -1014,7 +1148,7 @@ function GradesView({
           {/* Course header */}
           <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center text-indigo-600 font-bold text-sm">
+              <div className="w-10 h-10 bg-emerald-50 rounded-xl flex items-center justify-center text-emerald-600 font-bold text-sm">
                 {selectedCourse.period ?? "—"}
               </div>
               <div>
@@ -1026,10 +1160,30 @@ function GradesView({
             </div>
             <div className="flex items-center gap-3">
               <span className="text-xs text-slate-400">{enrollments.length} enrolled</span>
+              <ExportButton
+                disabled={enrollments.length === 0}
+                onExcelClick={() => {
+                  const headers = ["Student ID", "Name", "Email", "Score (0-100)", "Letter", "GPA Points", "Status"];
+                  const rows = enrollments.map((e) => {
+                    const g = e.grade !== null ? letterGrade(e.grade) : null;
+                    return [e.student.studentId ?? "", e.student.name, e.student.email, e.grade ?? "Pending", g?.letter ?? "—", g ? g.points.toFixed(1) : "—", e.gradeSubmitted ? "Submitted" : "Pending"];
+                  });
+                  downloadExcel(`Grades_${selectedCourse?.name ?? "Export"}`, headers, rows);
+                }}
+                onPDFClick={() => {
+                  const title = `Grade Report — ${selectedCourse?.name} — ${selectedCourse?.semester} ${selectedCourse?.year}`;
+                  const headers = ["Name", "Student ID", "Score", "Letter", "Status"];
+                  const rows = enrollments.map((e) => {
+                    const g = e.grade !== null ? letterGrade(e.grade) : null;
+                    return [e.student.name, e.student.studentId ?? "—", e.grade !== null ? String(e.grade) : "Pending", g?.letter ?? "—", e.gradeSubmitted ? "Submitted" : "Pending"];
+                  });
+                  downloadPDF(`Grades_${selectedCourse?.name ?? "Export"}`, title, headers, rows);
+                }}
+              />
               <button
                 onClick={() => setEnrollOpen(true)}
                 disabled={available.length === 0}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-xl transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-xl transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 + Enroll Student
               </button>
@@ -1078,7 +1232,7 @@ function GradesView({
                           <input
                             type="number" min="0" max="100" value={val} placeholder="0–100"
                             onChange={(ev) => setGradeInputs((p) => ({ ...p, [e._id]: ev.target.value }))}
-                            className="w-20 px-3 py-1.5 rounded-lg border border-slate-200 text-sm outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-all"
+                            className="w-20 px-3 py-1.5 rounded-lg border border-slate-200 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all"
                           />
                         </td>
                         <td className="px-6 py-4">
@@ -1100,7 +1254,7 @@ function GradesView({
                             <button
                               onClick={() => submitGrade(e._id, e.student.name)}
                               disabled={!val || submitting[e._id]}
-                              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm"
+                              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm"
                             >
                               {submitting[e._id] ? "…" : e.gradeSubmitted ? "Update" : "Submit"}
                             </button>
@@ -1138,7 +1292,7 @@ function GradesView({
               <select
                 value={enrollStudent}
                 onChange={(e) => setEnrollStudent(e.target.value)}
-                className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-all mb-4 bg-white"
+                className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all mb-4 bg-white"
               >
                 <option value="">— Select student —</option>
                 {available.map((s) => (
@@ -1150,13 +1304,538 @@ function GradesView({
             )}
             <div className="flex gap-3">
               <button onClick={() => { setEnrollOpen(false); setEnrollStudent(""); }} className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 text-slate-700 text-sm font-medium hover:bg-slate-50 transition-colors">Cancel</button>
-              <button onClick={handleEnroll} disabled={!enrollStudent || enrolling} className="flex-1 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium transition-colors disabled:opacity-60 shadow-sm">
+              <button onClick={handleEnroll} disabled={!enrollStudent || enrolling} className="flex-1 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium transition-colors disabled:opacity-60 shadow-sm">
                 {enrolling ? "Enrolling…" : "Enroll"}
               </button>
             </div>
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── FeeModal ───────────────────────────────────────────────────────────────
+function FeeModal({ open, onClose, onSubmit, editing, saving, students }: {
+  open: boolean; onClose: () => void; onSubmit: (d: FeeFormData) => void;
+  editing: Fee | null; saving: boolean; students: Student[];
+}) {
+  const cy = new Date().getFullYear();
+  const empty: FeeFormData = { studentId: "", description: "", category: "tuition", totalAmount: "", dueDate: "", semester: "", year: String(cy) };
+  const [form, setForm] = useState<FeeFormData>(empty);
+  const [errors, setErrors] = useState<Partial<FeeFormData>>({});
+
+  useEffect(() => {
+    setForm(editing ? {
+      studentId: editing.student._id, description: editing.description,
+      category: editing.category, totalAmount: String(editing.totalAmount),
+      dueDate: editing.dueDate ? editing.dueDate.split("T")[0] : "",
+      semester: editing.semester ?? "", year: String(editing.year ?? cy),
+    } : empty);
+    setErrors({});
+  }, [editing, open]);
+
+  function validate() {
+    const e: Partial<FeeFormData> = {};
+    if (!form.studentId) e.studentId = "Student is required";
+    if (!form.description.trim()) e.description = "Description is required";
+    const amt = parseFloat(form.totalAmount);
+    if (!form.totalAmount || isNaN(amt) || amt <= 0) e.totalAmount = "Enter a valid amount";
+    setErrors(e); return Object.keys(e).length === 0;
+  }
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md">
+        <div className="flex items-center justify-between px-6 pt-6 pb-4 border-b border-slate-100">
+          <div>
+            <h2 className="text-lg font-bold text-slate-900">{editing ? "Edit Fee" : "Add Fee Record"}</h2>
+            <p className="text-slate-500 text-sm mt-0.5">{editing ? "Update fee details" : "Create a new fee for a student"}</p>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-100 text-slate-400 text-sm">✕</button>
+        </div>
+        <form onSubmit={(e) => { e.preventDefault(); if (validate()) onSubmit(form); }} className="px-6 py-5 space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">Student</label>
+            <select value={form.studentId} onChange={(e) => setForm({ ...form, studentId: e.target.value })} disabled={!!editing}
+              className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none bg-white transition-all disabled:opacity-60 ${errors.studentId ? "border-red-400 bg-red-50" : "border-slate-200 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"}`}>
+              <option value="">— Select student —</option>
+              {students.map((s) => <option key={s._id} value={s._id}>{s.name} · {GRADE_LABELS[s.gradeLevel]?.short}</option>)}
+            </select>
+            {errors.studentId && <p className="text-red-500 text-xs mt-1">{errors.studentId}</p>}
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">Description</label>
+            <input type="text" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="e.g. Fall 2025 Tuition"
+              className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none transition-all ${errors.description ? "border-red-400 bg-red-50" : "border-slate-200 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"}`} />
+            {errors.description && <p className="text-red-500 text-xs mt-1">{errors.description}</p>}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Category</label>
+              <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 bg-white capitalize transition-all">
+                {FEE_CATEGORIES.map((c) => <option key={c} value={c} className="capitalize">{c}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Amount (ETB)</label>
+              <input type="number" value={form.totalAmount} onChange={(e) => setForm({ ...form, totalAmount: e.target.value })} placeholder="e.g. 5000" min="1"
+                className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none transition-all ${errors.totalAmount ? "border-red-400 bg-red-50" : "border-slate-200 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"}`} />
+              {errors.totalAmount && <p className="text-red-500 text-xs mt-1">{errors.totalAmount}</p>}
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Due Date</label>
+              <input type="date" value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Semester</label>
+              <select value={form.semester} onChange={(e) => setForm({ ...form, semester: e.target.value })} className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 bg-white transition-all">
+                <option value="">None</option><option value="Fall">Fall</option><option value="Spring">Spring</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Year</label>
+              <input type="number" value={form.year} onChange={(e) => setForm({ ...form, year: e.target.value })} min="2000" max="2100" className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all" />
+            </div>
+          </div>
+          <div className="flex gap-3 pt-1">
+            <button type="button" onClick={onClose} className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 text-slate-700 text-sm font-medium hover:bg-slate-50 transition-colors">Cancel</button>
+            <button type="submit" disabled={saving} className="flex-1 px-4 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-medium transition-colors disabled:opacity-60 shadow-sm">
+              {saving ? "Saving…" : editing ? "Save Changes" : "Add Fee"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ── AttendanceView ─────────────────────────────────────────────────────────
+function AttendanceView({ courses, toast }: {
+  courses: Course[];
+  toast: (msg: string, type: ToastItem["type"]) => void;
+}) {
+  const [selectedCourseId, setSelectedCourseId] = useState("");
+  const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().split("T")[0]);
+  const [enrollments, setEnrollments] = useState<Enrollment[]>([]);
+  const [draft, setDraft] = useState<Record<string, { status: string; note: string }>>({});
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!selectedCourseId) { setEnrollments([]); setDraft({}); return; }
+    fetch(`${API_URL}/api/courses/${selectedCourseId}/enrollments`)
+      .then((r) => r.json()).then(setEnrollments)
+      .catch(() => toast("Failed to load enrollments.", "error"));
+  }, [selectedCourseId, toast]);
+
+  useEffect(() => {
+    if (!selectedCourseId || !selectedDate || enrollments.length === 0) return;
+    let cancelled = false;
+    setLoading(true);
+    fetch(`${API_URL}/api/attendance?course=${selectedCourseId}&date=${selectedDate}`)
+      .then((r) => r.json())
+      .then((records: AttendanceRecord[]) => {
+        if (cancelled) return;
+        const d: Record<string, { status: string; note: string }> = {};
+        enrollments.forEach((e) => {
+          const existing = records.find((r) => r.student._id === e.student._id);
+          d[e.student._id] = existing ? { status: existing.status, note: existing.note } : { status: "present", note: "" };
+        });
+        setDraft(d);
+      })
+      .catch(() => { if (!cancelled) toast("Failed to load attendance.", "error"); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [selectedCourseId, selectedDate, enrollments, toast]);
+
+  async function saveAttendance() {
+    if (!selectedCourseId || enrollments.length === 0) return;
+    setSaving(true);
+    try {
+      const records = enrollments.map((e) => ({
+        student: e.student._id,
+        status: draft[e.student._id]?.status ?? "present",
+        note: draft[e.student._id]?.note ?? "",
+      }));
+      const res = await fetch(`${API_URL}/api/attendance/bulk`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ course: selectedCourseId, date: selectedDate, records }),
+      });
+      if (!res.ok) throw new Error();
+      toast(`Attendance saved for ${selectedDate}`, "success");
+    } catch { toast("Failed to save attendance.", "error"); }
+    finally { setSaving(false); }
+  }
+
+  const selectedCourse = courses.find((c) => c._id === selectedCourseId);
+  const stats = enrollments.length > 0 ? {
+    present: Object.values(draft).filter((d) => d.status === "present").length,
+    late:    Object.values(draft).filter((d) => d.status === "late").length,
+    absent:  Object.values(draft).filter((d) => d.status === "absent").length,
+    excused: Object.values(draft).filter((d) => d.status === "excused").length,
+  } : null;
+
+  return (
+    <div className="flex-1 overflow-auto p-8">
+      <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 mb-6">
+        <div className="flex items-center gap-4 flex-wrap">
+          <div className="flex-1 min-w-56">
+            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Course</label>
+            <select value={selectedCourseId} onChange={(e) => setSelectedCourseId(e.target.value)}
+              className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 bg-white transition-all">
+              <option value="">— Choose a course —</option>
+              {courses.map((c) => <option key={c._id} value={c._id}>{c.semester} {c.year} · {c.name} · {c.teacherName}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Date</label>
+            <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)}
+              className="px-4 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all" />
+          </div>
+        </div>
+      </div>
+
+      {!selectedCourseId ? (
+        <div className="flex flex-col items-center justify-center py-24 text-slate-400 gap-3">
+          <span className="text-5xl">📅</span>
+          <p className="font-semibold text-slate-600">Select a course to take attendance</p>
+        </div>
+      ) : loading ? (
+        <div className="py-16 flex items-center justify-center gap-3 text-slate-400">
+          <div className="w-7 h-7 border-[3px] border-emerald-500 border-t-transparent rounded-full animate-spin" />
+          <p className="text-sm">Loading…</p>
+        </div>
+      ) : enrollments.length === 0 ? (
+        <div className="py-24 flex flex-col items-center gap-3">
+          <div className="text-5xl">👥</div>
+          <p className="text-slate-700 font-semibold">No students enrolled in this course</p>
+        </div>
+      ) : (
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 gap-3 flex-wrap">
+            <div>
+              <p className="font-semibold text-slate-900">{selectedCourse?.name}</p>
+              <p className="text-xs text-slate-400 mt-0.5">
+                {new Date(selectedDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              {stats && (
+                <>
+                  <span className="px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 text-xs font-medium">{stats.present} Present</span>
+                  <span className="px-2 py-1 rounded-lg bg-amber-50 text-amber-700 text-xs font-medium">{stats.late} Late</span>
+                  <span className="px-2 py-1 rounded-lg bg-red-50 text-red-700 text-xs font-medium">{stats.absent} Absent</span>
+                  {stats.excused > 0 && <span className="px-2 py-1 rounded-lg bg-blue-50 text-blue-700 text-xs font-medium">{stats.excused} Excused</span>}
+                </>
+              )}
+              <button onClick={() => { const d: typeof draft = {}; enrollments.forEach((e) => { d[e.student._id] = { status: "present", note: draft[e.student._id]?.note ?? "" }; }); setDraft(d); }} className="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors">All Present</button>
+              <ExportButton
+                disabled={enrollments.length === 0}
+                onExcelClick={() => {
+                  const headers = ["Name", "Student ID", "Status", "Note", "Date"];
+                  const rows = enrollments.map((e) => [e.student.name, e.student.studentId ?? "", draft[e.student._id]?.status ?? "present", draft[e.student._id]?.note ?? "", selectedDate]);
+                  downloadExcel(`Attendance_${selectedDate}`, headers, rows);
+                }}
+                onPDFClick={() => {
+                  const title = `Attendance — ${selectedCourse?.name} — ${selectedDate}`;
+                  const headers = ["Name", "ID", "Status", "Note"];
+                  const rows = enrollments.map((e) => [e.student.name, e.student.studentId ?? "—", (draft[e.student._id]?.status ?? "present").toUpperCase(), draft[e.student._id]?.note ?? ""]);
+                  downloadPDF(`Attendance_${selectedDate}`, title, headers, rows);
+                }}
+              />
+              <button onClick={saveAttendance} disabled={saving}
+                className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-medium rounded-xl transition-colors shadow-sm disabled:opacity-50">
+                {saving ? "Saving…" : "Save Attendance"}
+              </button>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-100">
+                  <th className="text-left px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Student</th>
+                  <th className="text-left px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Status</th>
+                  <th className="text-left px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Note</th>
+                </tr>
+              </thead>
+              <tbody>
+                {enrollments.map((e) => {
+                  const d = draft[e.student._id] ?? { status: "present", note: "" };
+                  return (
+                    <tr key={e._id} className="border-b border-slate-50 hover:bg-slate-50/70 transition-colors">
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold ${getAvatarColor(e.student.name)}`}>{getInitials(e.student.name)}</div>
+                          <div>
+                            <p className="font-medium text-slate-900 text-sm">{e.student.name}</p>
+                            <p className="text-xs text-slate-400 font-mono">{e.student.studentId ?? e.student.email}</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-2">
+                          {(["present", "late", "absent", "excused"] as const).map((status) => (
+                            <button key={status} onClick={() => setDraft((p) => ({ ...p, [e.student._id]: { ...p[e.student._id] ?? { note: "" }, status } }))}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-colors ${d.status === status ? ATTENDANCE_STATUS[status].color + " ring-2 ring-offset-1 ring-current" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`}>
+                              {ATTENDANCE_STATUS[status].label}
+                            </button>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <input type="text" value={d.note} onChange={(ev) => setDraft((p) => ({ ...p, [e.student._id]: { ...p[e.student._id] ?? { status: "present" }, note: ev.target.value } }))}
+                          placeholder="Optional note…"
+                          className="w-44 px-3 py-1.5 rounded-lg border border-slate-200 text-xs outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all" />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── FeesView ───────────────────────────────────────────────────────────────
+function FeesView({ students, toast, addSignal }: {
+  students: Student[];
+  toast: (msg: string, type: ToastItem["type"]) => void;
+  addSignal: number;
+}) {
+  const [fees, setFees]               = useState<Fee[]>([]);
+  const [fetching, setFetching]       = useState(true);
+  const [search, setSearch]           = useState("");
+  const [filterStatus, setFilterStatus]     = useState("");
+  const [filterSemester, setFilterSemester] = useState("");
+  const [feeModalOpen, setFeeModalOpen]     = useState(false);
+  const [editingFee, setEditingFee]         = useState<Fee | null>(null);
+  const [savingFee, setSavingFee]           = useState(false);
+  const [deletingFee, setDeletingFee]       = useState<Fee | null>(null);
+  const [deletingFeeIP, setDeletingFeeIP]   = useState(false);
+  const [paymentFee, setPaymentFee]         = useState<Fee | null>(null);
+  const [paymentAmount, setPaymentAmount]   = useState("");
+  const [paymentNote, setPaymentNote]       = useState("");
+  const [savingPayment, setSavingPayment]   = useState(false);
+
+  const fetchFees = useCallback(async () => {
+    try {
+      setFetching(true);
+      const res = await fetch(`${API_URL}/api/fees`);
+      if (!res.ok) throw new Error();
+      setFees(await res.json());
+    } catch { toast("Failed to load fees.", "error"); }
+    finally { setFetching(false); }
+  }, [toast]);
+
+  useEffect(() => { fetchFees(); }, [fetchFees]);
+
+  useEffect(() => {
+    if (addSignal > 0) { setEditingFee(null); setFeeModalOpen(true); }
+  }, [addSignal]);
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    return fees.filter((f) => {
+      if (q && !f.student.name.toLowerCase().includes(q) && !f.description.toLowerCase().includes(q)) return false;
+      if (filterStatus && f.status !== filterStatus) return false;
+      if (filterSemester && f.semester !== filterSemester) return false;
+      return true;
+    });
+  }, [fees, search, filterStatus, filterSemester]);
+
+  const summary = useMemo(() => ({
+    totalBilled:    fees.reduce((s, f) => s + f.totalAmount, 0),
+    totalCollected: fees.reduce((s, f) => s + f.paidAmount, 0),
+    outstanding:    fees.reduce((s, f) => s + (f.totalAmount - f.paidAmount), 0),
+  }), [fees]);
+
+  async function handleFeeSubmit(data: FeeFormData) {
+    setSavingFee(true);
+    const payload = { student: data.studentId, description: data.description, category: data.category, totalAmount: parseFloat(data.totalAmount), dueDate: data.dueDate || undefined, semester: data.semester || undefined, year: data.year ? parseInt(data.year) : undefined };
+    try {
+      const url    = editingFee ? `${API_URL}/api/fees/${editingFee._id}` : `${API_URL}/api/fees`;
+      const method = editingFee ? "PUT" : "POST";
+      const res    = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      if (!res.ok) throw new Error();
+      toast(editingFee ? "Fee updated" : "Fee added", "success");
+      setFeeModalOpen(false); fetchFees();
+    } catch { toast("Operation failed.", "error"); }
+    finally { setSavingFee(false); }
+  }
+
+  async function handleDeleteFee() {
+    if (!deletingFee) return;
+    setDeletingFeeIP(true);
+    try {
+      const res = await fetch(`${API_URL}/api/fees/${deletingFee._id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error();
+      toast("Fee deleted", "success"); setDeletingFee(null); fetchFees();
+    } catch { toast("Failed to delete.", "error"); }
+    finally { setDeletingFeeIP(false); }
+  }
+
+  async function handlePayment() {
+    if (!paymentFee || !paymentAmount) return;
+    setSavingPayment(true);
+    try {
+      const res = await fetch(`${API_URL}/api/fees/${paymentFee._id}/payment`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount: parseFloat(paymentAmount), note: paymentNote }),
+      });
+      if (!res.ok) { const err = await res.json(); throw new Error(err.message); }
+      toast("Payment recorded", "success");
+      setPaymentFee(null); setPaymentAmount(""); setPaymentNote(""); fetchFees();
+    } catch (e: unknown) { toast((e as Error).message || "Failed to record payment.", "error"); }
+    finally { setSavingPayment(false); }
+  }
+
+  const statusStyle: Record<string, string> = {
+    paid:    "bg-emerald-50 text-emerald-700",
+    partial: "bg-amber-50 text-amber-700",
+    unpaid:  "bg-red-50 text-red-700",
+  };
+
+  return (
+    <div className="flex-1 overflow-auto p-8">
+      <div className="grid grid-cols-3 gap-4 mb-6">
+        {[
+          { label: "Total Billed",    value: summary.totalBilled,    color: "text-slate-900" },
+          { label: "Total Collected", value: summary.totalCollected, color: "text-emerald-600" },
+          { label: "Outstanding",     value: summary.outstanding,    color: "text-red-500" },
+        ].map(({ label, value, color }) => (
+          <div key={label} className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">{label}</p>
+            <p className={`text-2xl font-bold mt-1 ${color}`}>{value.toLocaleString()} ETB</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        <div className="relative flex-1 max-w-xs">
+          <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm pointer-events-none">🔍</span>
+          <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search student or description…"
+            className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all" />
+        </div>
+        <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="px-3 py-2 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 bg-white transition-all">
+          <option value="">All Statuses</option><option value="unpaid">Unpaid</option><option value="partial">Partial</option><option value="paid">Paid</option>
+        </select>
+        <select value={filterSemester} onChange={(e) => setFilterSemester(e.target.value)} className="px-3 py-2 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 bg-white transition-all">
+          <option value="">All Semesters</option><option value="Fall">Fall</option><option value="Spring">Spring</option>
+        </select>
+        <ExportButton disabled={filtered.length === 0}
+          onExcelClick={() => {
+            const headers = ["Student", "Student ID", "Description", "Category", "Total (ETB)", "Paid (ETB)", "Balance (ETB)", "Status", "Due Date"];
+            const rows = filtered.map((f) => [f.student.name, f.student.studentId ?? "", f.description, f.category, f.totalAmount, f.paidAmount, f.totalAmount - f.paidAmount, f.status, f.dueDate ? new Date(f.dueDate).toLocaleDateString() : ""]);
+            downloadExcel("Fees_Report", headers, rows);
+          }}
+          onPDFClick={() => {
+            const headers = ["Student", "Description", "Total", "Paid", "Balance", "Status"];
+            const rows = filtered.map((f) => [f.student.name, f.description, `${f.totalAmount.toLocaleString()} ETB`, `${f.paidAmount.toLocaleString()} ETB`, `${(f.totalAmount - f.paidAmount).toLocaleString()} ETB`, f.status.toUpperCase()]);
+            downloadPDF("Fees_Report", "School Fees Report", headers, rows);
+          }}
+        />
+      </div>
+
+      {fetching ? (
+        <div className="py-24 flex flex-col items-center gap-4 text-slate-400">
+          <div className="w-8 h-8 border-[3px] border-emerald-500 border-t-transparent rounded-full animate-spin" />
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="py-24 flex flex-col items-center gap-3">
+          <div className="text-5xl">💰</div>
+          <p className="text-slate-700 font-semibold">No fee records found</p>
+          <p className="text-slate-400 text-sm">{fees.length === 0 ? 'Click "Add Fee" to create the first record' : "Try adjusting your filters"}</p>
+        </div>
+      ) : (
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-100">
+                  {["Student", "Description", "Category", "Total", "Paid", "Balance", "Due Date", "Status", "Actions"].map((h) => (
+                    <th key={h} className={`px-5 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider ${h === "Actions" ? "text-right" : "text-left"}`}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((f) => (
+                  <tr key={f._id} className="border-b border-slate-50 hover:bg-slate-50/70 transition-colors">
+                    <td className="px-5 py-4">
+                      <div className="flex items-center gap-2">
+                        <div className={`w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0 ${getAvatarColor(f.student.name)}`}>{getInitials(f.student.name)}</div>
+                        <div>
+                          <p className="font-medium text-slate-900 text-sm">{f.student.name}</p>
+                          <p className="text-xs text-slate-400 font-mono">{f.student.studentId ?? ""}</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-5 py-4 text-slate-700 text-sm max-w-36 truncate">{f.description}</td>
+                    <td className="px-5 py-4"><span className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 text-xs capitalize">{f.category}</span></td>
+                    <td className="px-5 py-4 text-slate-700 text-sm font-medium">{f.totalAmount.toLocaleString()}</td>
+                    <td className="px-5 py-4 text-emerald-600 text-sm font-medium">{f.paidAmount.toLocaleString()}</td>
+                    <td className="px-5 py-4 text-sm font-semibold text-slate-900">{(f.totalAmount - f.paidAmount).toLocaleString()}</td>
+                    <td className="px-5 py-4 text-slate-500 text-xs">{f.dueDate ? new Date(f.dueDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—"}</td>
+                    <td className="px-5 py-4"><span className={`inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium capitalize ${statusStyle[f.status] ?? ""}`}>{f.status}</span></td>
+                    <td className="px-5 py-4">
+                      <div className="flex items-center justify-end gap-1.5">
+                        {f.status !== "paid" && <button onClick={() => { setPaymentFee(f); setPaymentAmount(""); setPaymentNote(""); }} className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-emerald-600 bg-emerald-50 hover:bg-emerald-100 transition-colors">Pay</button>}
+                        <button onClick={() => { setEditingFee(f); setFeeModalOpen(true); }} className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 transition-colors">Edit</button>
+                        <button onClick={() => setDeletingFee(f)} className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 transition-colors">Delete</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      <FeeModal open={feeModalOpen} onClose={() => { setFeeModalOpen(false); setEditingFee(null); }} onSubmit={handleFeeSubmit} editing={editingFee} saving={savingFee} students={students} />
+
+      {paymentFee && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setPaymentFee(null)} />
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+            <h2 className="text-lg font-bold text-slate-900 mb-0.5">Record Payment</h2>
+            <p className="text-slate-500 text-sm mb-5">
+              {paymentFee.student.name} · <span className="font-medium">{paymentFee.description}</span><br />
+              <span className="text-emerald-600 font-medium">Remaining: {(paymentFee.totalAmount - paymentFee.paidAmount).toLocaleString()} ETB</span>
+            </p>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1.5">Amount (ETB)</label>
+                <input type="number" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} min="1" max={paymentFee.totalAmount - paymentFee.paidAmount} placeholder="Enter amount"
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1.5">Note (optional)</label>
+                <input type="text" value={paymentNote} onChange={(e) => setPaymentNote(e.target.value)} placeholder="e.g. Cash payment"
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all" />
+              </div>
+            </div>
+            <div className="flex gap-3 mt-5">
+              <button onClick={() => setPaymentFee(null)} className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 text-slate-700 text-sm font-medium hover:bg-slate-50 transition-colors">Cancel</button>
+              <button onClick={handlePayment} disabled={!paymentAmount || parseFloat(paymentAmount) <= 0 || savingPayment}
+                className="flex-1 px-4 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-medium transition-colors disabled:opacity-60 shadow-sm">
+                {savingPayment ? "Recording…" : "Record Payment"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <ConfirmDelete name={deletingFee?.description ?? null} entity="Fee Record" onConfirm={handleDeleteFee} onCancel={() => setDeletingFee(null)} deleting={deletingFeeIP} />
     </div>
   );
 }
@@ -1173,7 +1852,7 @@ function AnalyticsView({ students }: { students: Student[] }) {
 
     const ageBuckets = [
       { label: "Under 14", min: 0,  max: 13, color: "bg-violet-500" },
-      { label: "14–15",    min: 14, max: 15, color: "bg-indigo-500" },
+      { label: "14–15",    min: 14, max: 15, color: "bg-emerald-500" },
       { label: "16–17",    min: 16, max: 17, color: "bg-blue-500"   },
       { label: "18+",      min: 18, max: 99, color: "bg-emerald-500"},
     ].map((b) => ({ ...b, count: students.filter((s) => s.age >= b.min && s.age <= b.max).length }));
@@ -1218,7 +1897,7 @@ function AnalyticsView({ students }: { students: Student[] }) {
     );
   }
 
-  const domainColors = ["bg-indigo-500","bg-emerald-500","bg-amber-500","bg-rose-500","bg-cyan-500"];
+  const domainColors = ["bg-teal-500","bg-emerald-500","bg-amber-500","bg-rose-500","bg-cyan-500"];
 
   function BarChart({ buckets, total }: { buckets: { label: string; count: number; color: string }[]; total: number }) {
     const max = Math.max(...buckets.map((b) => b.count), 1);
@@ -1252,7 +1931,7 @@ function AnalyticsView({ students }: { students: Student[] }) {
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        <StatCard label="Total Students" value={data.total}           icon="👥" bg="bg-indigo-50"  sub="Enrolled" />
+        <StatCard label="Total Students" value={data.total}           icon="👥" bg="bg-emerald-50"  sub="Enrolled" />
         <StatCard label="Average Age"    value={data.avg}             icon="📊" bg="bg-emerald-50" sub="Years" />
         <StatCard label="Average GPA"    value={data.avgGPA ?? "—"}   icon="🎓" bg="bg-violet-50"  sub={`${data.gpaCount} with grades`} />
         <StatCard label="Age Range"      value={`${data.min}–${data.max}`} icon="📏" bg="bg-amber-50" sub="Years" />
@@ -1331,24 +2010,24 @@ function SettingsView({ onLogout }: { onLogout: () => void }) {
           </div>
           <div className="p-6">
             <div className="flex items-center gap-4 mb-6">
-              <div className="w-16 h-16 rounded-2xl bg-indigo-500 flex items-center justify-center text-white text-xl font-bold shadow-md">AD</div>
+              <div className="w-16 h-16 rounded-2xl bg-emerald-600 flex items-center justify-center text-white text-xl font-bold shadow-md">AD</div>
               <div>
                 <p className="font-semibold text-slate-900">Administrator</p>
                 <p className="text-slate-400 text-sm">admin@school.edu</p>
-                <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-indigo-100 text-indigo-700 text-xs font-medium mt-1.5">Admin</span>
+                <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-700 text-xs font-medium mt-1.5">Admin</span>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-4 mb-4">
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1.5">Full Name</label>
-                <input defaultValue="Administrator" className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-all" />
+                <input defaultValue="Administrator" className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all" />
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1.5">Email</label>
-                <input defaultValue="admin@school.edu" className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-all" />
+                <input defaultValue="admin@school.edu" className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all" />
               </div>
             </div>
-            <button onClick={() => { setSaved(true); setTimeout(() => setSaved(false), 2000); }} className={`px-4 py-2 text-sm font-medium rounded-xl transition-all shadow-sm ${saved ? "bg-emerald-500 text-white" : "bg-indigo-600 hover:bg-indigo-700 text-white"}`}>
+            <button onClick={() => { setSaved(true); setTimeout(() => setSaved(false), 2000); }} className={`px-4 py-2 text-sm font-medium rounded-xl transition-all shadow-sm ${saved ? "bg-emerald-500 text-white" : "bg-emerald-600 hover:bg-emerald-700 text-white"}`}>
               {saved ? "✓ Saved!" : "Save Changes"}
             </button>
           </div>
@@ -1364,7 +2043,7 @@ function SettingsView({ onLogout }: { onLogout: () => void }) {
                 <p className="text-sm font-medium text-slate-900">Email Notifications</p>
                 <p className="text-xs text-slate-400 mt-0.5">Receive alerts for student activity</p>
               </div>
-              <button onClick={() => setNotifications((v) => !v)} className={`relative w-11 h-6 rounded-full transition-colors ${notifications ? "bg-indigo-600" : "bg-slate-200"}`}>
+              <button onClick={() => setNotifications((v) => !v)} className={`relative w-11 h-6 rounded-full transition-colors ${notifications ? "bg-emerald-600" : "bg-slate-200"}`}>
                 <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${notifications ? "translate-x-5" : "translate-x-0"}`} />
               </button>
             </div>
@@ -1433,6 +2112,9 @@ export default function Home() {
 
   // Grades navigation
   const [gradesCourseId, setGradesCourseId] = useState<string | null>(null);
+
+  // Fees — signal to open the Add Fee modal from the header button
+  const [addFeeSignal, setAddFeeSignal] = useState(0);
 
   // Toasts
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -1591,18 +2273,20 @@ export default function Home() {
   }
 
   const headerMeta: Record<Tab, { title: string; sub: string }> = {
-    dashboard: { title: "Dashboard",          sub: "Welcome back, Administrator"             },
-    students:  { title: "Students",           sub: "Manage and track all enrolled students"  },
-    classes:   { title: "Classes",            sub: "Manage courses and student enrollments"  },
-    grades:    { title: "Grades",             sub: "Submit and review final grades"          },
-    analytics: { title: "Analytics",          sub: "Student data insights and statistics"    },
-    settings:  { title: "Settings",           sub: "Manage your account and preferences"     },
+    dashboard:  { title: "Dashboard",   sub: "Welcome back, Administrator"            },
+    students:   { title: "Students",    sub: "Manage and track all enrolled students" },
+    classes:    { title: "Classes",     sub: "Manage courses and student enrollments" },
+    grades:     { title: "Grades",      sub: "Submit and review final grades"         },
+    attendance: { title: "Attendance",  sub: "Take and review daily class attendance" },
+    fees:       { title: "Fees",        sub: "Track student fee billing and payments" },
+    analytics:  { title: "Analytics",   sub: "Student data insights and statistics"   },
+    settings:   { title: "Settings",    sub: "Manage your account and preferences"    },
   };
 
   if (!authed) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-        <div className="w-8 h-8 border-[3px] border-indigo-500 border-t-transparent rounded-full animate-spin" />
+        <div className="w-8 h-8 border-[3px] border-emerald-500 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
@@ -1619,13 +2303,18 @@ export default function Home() {
             <p className="text-slate-400 text-sm">{headerMeta[activeTab].sub}</p>
           </div>
           {activeTab === "students" && (
-            <button onClick={() => { setEditing(null); setModalOpen(true); }} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl text-sm font-medium transition-colors shadow-sm">
+            <button onClick={() => { setEditing(null); setModalOpen(true); }} className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl text-sm font-medium transition-colors shadow-sm">
               <span className="text-lg leading-none">+</span> Add Student
             </button>
           )}
           {activeTab === "classes" && (
-            <button onClick={() => { setEditingCourse(null); setCourseModalOpen(true); }} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl text-sm font-medium transition-colors shadow-sm">
+            <button onClick={() => { setEditingCourse(null); setCourseModalOpen(true); }} className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl text-sm font-medium transition-colors shadow-sm">
               <span className="text-lg leading-none">+</span> Add Course
+            </button>
+          )}
+          {activeTab === "fees" && (
+            <button onClick={() => setAddFeeSignal((v) => v + 1)} className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl text-sm font-medium transition-colors shadow-sm">
+              <span className="text-lg leading-none">+</span> Add Fee
             </button>
           )}
         </header>
@@ -1641,9 +2330,11 @@ export default function Home() {
         )}
         {activeTab === "students"  && <StudentsView students={students} fetching={fetching} onEdit={(s) => { setEditing(s); setModalOpen(true); }} onDelete={setToDelete} />}
         {activeTab === "classes"   && <ClassesView courses={courses} fetching={coursesFetching} onEdit={(c) => { setEditingCourse(c); setCourseModalOpen(true); }} onDelete={setDeletingCourse} onViewGrades={handleViewGrades} />}
-        {activeTab === "grades"    && <GradesView courses={courses} students={students} toast={toast} initCourseId={gradesCourseId} onGradeChanged={fetchStudents} />}
-        {activeTab === "analytics" && <AnalyticsView students={students} />}
-        {activeTab === "settings"  && <SettingsView onLogout={handleLogout} />}
+        {activeTab === "grades"     && <GradesView courses={courses} students={students} toast={toast} initCourseId={gradesCourseId} onGradeChanged={fetchStudents} />}
+        {activeTab === "attendance" && <AttendanceView courses={courses} toast={toast} />}
+        {activeTab === "fees"       && <FeesView students={students} toast={toast} addSignal={addFeeSignal} />}
+        {activeTab === "analytics"  && <AnalyticsView students={students} />}
+        {activeTab === "settings"   && <SettingsView onLogout={handleLogout} />}
       </div>
 
       {/* Global overlays */}
