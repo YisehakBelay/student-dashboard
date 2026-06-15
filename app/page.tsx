@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 
 import { Student, Course, Tab, ToastItem, StudentFormData, CourseFormData } from "./types";
-import { API_URL } from "./lib/constants";
+import { apiFetch, clearToken, getToken } from "./lib/api";
 
 import { Sidebar }        from "./components/Sidebar";
 import { Toasts }         from "./components/Toasts";
@@ -54,7 +54,7 @@ export default function Home() {
 
   // ── Auth ────────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!localStorage.getItem("sh_auth")) router.replace("/login");
+    if (!getToken()) router.replace("/login");
     else setAuthed(true);
   }, [router]);
 
@@ -74,28 +74,32 @@ export default function Home() {
   const fetchStudents = useCallback(async () => {
     try {
       setFetching(true);
-      const res = await fetch(`${API_URL}/api/students`);
+      const res = await apiFetch("/api/students");
+      if (res.status === 401) { clearToken(); router.replace("/login"); return; }
       if (!res.ok) throw new Error();
-      setStudents(await res.json());
+      const json = await res.json();
+      setStudents(json.data ?? json);
     } catch {
       toast("Failed to load students. Is the API running?", "error");
     } finally {
       setFetching(false);
     }
-  }, [toast]);
+  }, [toast, router]);
 
   const fetchCourses = useCallback(async () => {
     try {
       setCoursesFetching(true);
-      const res = await fetch(`${API_URL}/api/courses`);
+      const res = await apiFetch("/api/courses");
+      if (res.status === 401) { clearToken(); router.replace("/login"); return; }
       if (!res.ok) throw new Error();
-      setCourses(await res.json());
+      const json = await res.json();
+      setCourses(json.data ?? json);
     } catch {
       toast("Failed to load courses.", "error");
     } finally {
       setCoursesFetching(false);
     }
-  }, [toast]);
+  }, [toast, router]);
 
   useEffect(() => {
     if (authed) { fetchStudents(); fetchCourses(); }
@@ -103,7 +107,7 @@ export default function Home() {
 
   // ── Handlers ─────────────────────────────────────────────────────────────
   function handleLogout() {
-    localStorage.removeItem("sh_auth");
+    clearToken();
     router.replace("/login");
   }
 
@@ -117,14 +121,14 @@ export default function Home() {
     };
     try {
       if (editing) {
-        const res = await fetch(`${API_URL}/api/students/${editing._id}`, {
-          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+        const res = await apiFetch(`/api/students/${editing._id}`, {
+          method: "PUT", body: JSON.stringify(payload),
         });
         if (!res.ok) throw new Error();
         toast(`${data.name} updated successfully`, "success");
       } else {
-        const res = await fetch(`${API_URL}/api/students`, {
-          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+        const res = await apiFetch("/api/students", {
+          method: "POST", body: JSON.stringify(payload),
         });
         if (!res.ok) throw new Error();
         toast(`${data.name} added successfully`, "success");
@@ -142,7 +146,7 @@ export default function Home() {
     if (!toDelete) return;
     setDeleting(true);
     try {
-      const res = await fetch(`${API_URL}/api/students/${toDelete._id}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/students/${toDelete._id}`, { method: "DELETE" });
       if (!res.ok) throw new Error();
       toast(`${toDelete.name} removed`, "success");
       setToDelete(null);
@@ -166,14 +170,14 @@ export default function Home() {
     };
     try {
       if (editingCourse) {
-        const res = await fetch(`${API_URL}/api/courses/${editingCourse._id}`, {
-          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+        const res = await apiFetch(`/api/courses/${editingCourse._id}`, {
+          method: "PUT", body: JSON.stringify(payload),
         });
         if (!res.ok) throw new Error();
         toast(`${data.name} updated`, "success");
       } else {
-        const res = await fetch(`${API_URL}/api/courses`, {
-          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+        const res = await apiFetch("/api/courses", {
+          method: "POST", body: JSON.stringify(payload),
         });
         if (!res.ok) throw new Error();
         toast(`${data.name} created`, "success");
@@ -191,7 +195,7 @@ export default function Home() {
     if (!deletingCourse) return;
     setDeletingCourseIP(true);
     try {
-      const res = await fetch(`${API_URL}/api/courses/${deletingCourse._id}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/courses/${deletingCourse._id}`, { method: "DELETE" });
       if (!res.ok) throw new Error();
       toast(`${deletingCourse.name} deleted`, "success");
       setDeletingCourse(null);

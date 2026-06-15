@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from "react";
 import { Course, Enrollment, AttendanceRecord, ToastItem } from "../types";
-import { API_URL, ATTENDANCE_STATUS } from "../lib/constants";
+import { ATTENDANCE_STATUS } from "../lib/constants";
+import { apiFetch, handleUnauthorized } from "../lib/api";
 import { getInitials, getAvatarColor } from "../lib/utils";
 import { downloadExcel, downloadPDF } from "../lib/export";
 import { ExportButton } from "./ExportButton";
@@ -25,9 +26,9 @@ export function AttendanceView({
 
   useEffect(() => {
     if (!selectedCourseId) { setEnrollments([]); setDraft({}); return; }
-    fetch(`${API_URL}/api/courses/${selectedCourseId}/enrollments`)
-      .then((r) => r.json())
-      .then(setEnrollments)
+    apiFetch(`/api/courses/${selectedCourseId}/enrollments`)
+      .then((r) => { if (r.status === 401) { handleUnauthorized(); throw new Error(); } return r.json(); })
+      .then((data) => setEnrollments(data.data ?? data))
       .catch(() => toast("Failed to load enrollments.", "error"));
   }, [selectedCourseId, toast]);
 
@@ -35,9 +36,9 @@ export function AttendanceView({
     if (!selectedCourseId || !selectedDate || enrollments.length === 0) return;
     let cancelled = false;
     setLoading(true);
-    fetch(`${API_URL}/api/attendance?course=${selectedCourseId}&date=${selectedDate}`)
-      .then((r) => r.json())
-      .then((records: AttendanceRecord[]) => {
+    apiFetch(`/api/attendance?course=${selectedCourseId}&date=${selectedDate}`)
+      .then((r) => { if (r.status === 401) { handleUnauthorized(); throw new Error(); } return r.json(); })
+      .then((json) => { const records: AttendanceRecord[] = json.data ?? json;
         if (cancelled) return;
         const d: Record<string, { status: string; note: string }> = {};
         enrollments.forEach((e) => {
@@ -62,9 +63,8 @@ export function AttendanceView({
         status: draft[e.student._id]?.status ?? "present",
         note: draft[e.student._id]?.note ?? "",
       }));
-      const res = await fetch(`${API_URL}/api/attendance/bulk`, {
+      const res = await apiFetch("/api/attendance/bulk", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ course: selectedCourseId, date: selectedDate, records }),
       });
       if (!res.ok) throw new Error();

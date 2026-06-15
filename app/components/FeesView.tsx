@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { Student, Fee, FeeFormData, ToastItem } from "../types";
-import { API_URL } from "../lib/constants";
+import { apiFetch, handleUnauthorized } from "../lib/api";
 import { getInitials, getAvatarColor } from "../lib/utils";
 import { downloadExcel, downloadPDF } from "../lib/export";
 import { ExportButton } from "./ExportButton";
@@ -36,9 +36,11 @@ export function FeesView({
   const fetchFees = useCallback(async () => {
     try {
       setFetching(true);
-      const res = await fetch(`${API_URL}/api/fees`);
+      const res = await apiFetch("/api/fees");
+      if (res.status === 401) { handleUnauthorized(); return; }
       if (!res.ok) throw new Error();
-      setFees(await res.json());
+      const json = await res.json();
+      setFees(json.data ?? json);
     } catch {
       toast("Failed to load fees.", "error");
     } finally {
@@ -81,11 +83,9 @@ export function FeesView({
       year: data.year ? parseInt(data.year) : undefined,
     };
     try {
-      const url    = editingFee ? `${API_URL}/api/fees/${editingFee._id}` : `${API_URL}/api/fees`;
+      const path   = editingFee ? `/api/fees/${editingFee._id}` : "/api/fees";
       const method = editingFee ? "PUT" : "POST";
-      const res    = await fetch(url, {
-        method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
-      });
+      const res    = await apiFetch(path, { method, body: JSON.stringify(payload) });
       if (!res.ok) throw new Error();
       toast(editingFee ? "Fee updated" : "Fee added", "success");
       setFeeModalOpen(false);
@@ -101,7 +101,7 @@ export function FeesView({
     if (!deletingFee) return;
     setDeletingFeeIP(true);
     try {
-      const res = await fetch(`${API_URL}/api/fees/${deletingFee._id}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/fees/${deletingFee._id}`, { method: "DELETE" });
       if (!res.ok) throw new Error();
       toast("Fee deleted", "success");
       setDeletingFee(null);
@@ -117,9 +117,8 @@ export function FeesView({
     if (!paymentFee || !paymentAmount) return;
     setSavingPayment(true);
     try {
-      const res = await fetch(`${API_URL}/api/fees/${paymentFee._id}/payment`, {
+      const res = await apiFetch(`/api/fees/${paymentFee._id}/payment`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ amount: parseFloat(paymentAmount), note: paymentNote }),
       });
       if (!res.ok) { const err = await res.json(); throw new Error(err.message); }

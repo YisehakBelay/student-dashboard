@@ -2,6 +2,8 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { API_URL } from "../lib/constants";
+import { setToken, getToken } from "../lib/api";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -12,22 +14,27 @@ export default function LoginPage() {
   const [showPw, setShowPw] = useState(false);
 
   useEffect(() => {
-    if (localStorage.getItem("sh_auth")) router.replace("/");
+    if (getToken()) router.replace("/");
   }, [router]);
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError("");
-    setTimeout(() => {
-      if (email === "admin@school.edu" && password === "admin123") {
-        localStorage.setItem("sh_auth", "1");
-        router.replace("/");
-      } else {
-        setError("Invalid email or password.");
-        setLoading(false);
-      }
-    }, 650);
+    try {
+      const res = await fetch(`${API_URL}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "Invalid email or password.");
+      setToken(data.token);
+      router.replace("/");
+    } catch (err: unknown) {
+      setError((err as Error).message);
+      setLoading(false);
+    }
   }
 
   return (
@@ -116,9 +123,13 @@ export default function LoginPage() {
           </form>
 
           <div className="mt-6 pt-5 border-t border-white/[0.10] text-center">
-            <p className="text-slate-500 text-xs">Demo credentials</p>
-            <p className="text-slate-300 text-xs mt-1 font-mono">
-              admin@school.edu&nbsp;&nbsp;·&nbsp;&nbsp;admin123
+            <p className="text-slate-500 text-xs">No account yet?</p>
+            <p className="text-slate-300 text-xs mt-1">
+              Register via{" "}
+              <a href="http://localhost:5000/api/docs" target="_blank" rel="noreferrer" className="text-indigo-400 underline">
+                Swagger UI
+              </a>{" "}
+              at <span className="font-mono">POST /api/auth/register</span>
             </p>
           </div>
         </div>

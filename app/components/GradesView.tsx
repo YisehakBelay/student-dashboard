@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from "react";
 import { Course, Student, Enrollment, ToastItem } from "../types";
-import { API_URL, GRADE_LABELS } from "../lib/constants";
+import { GRADE_LABELS } from "../lib/constants";
+import { apiFetch, handleUnauthorized } from "../lib/api";
 import { getInitials, getAvatarColor, letterGrade } from "../lib/utils";
 import { downloadExcel, downloadPDF } from "../lib/export";
 import { ExportButton } from "./ExportButton";
@@ -40,7 +41,8 @@ export function GradesView({
     (async () => {
       setFetching(true);
       try {
-        const res = await fetch(`${API_URL}/api/courses/${selectedCourseId}/enrollments`);
+        const res = await apiFetch(`/api/courses/${selectedCourseId}/enrollments`);
+        if (res.status === 401) { handleUnauthorized(); return; }
         if (!res.ok) throw new Error();
         const data: Enrollment[] = await res.json();
         if (cancelled) return;
@@ -63,9 +65,8 @@ export function GradesView({
     if (isNaN(grade) || grade < 0 || grade > 100) { toast("Grade must be 0–100.", "error"); return; }
     setSubmitting((p) => ({ ...p, [enrollmentId]: true }));
     try {
-      const res = await fetch(`${API_URL}/api/enrollments/${enrollmentId}/grade`, {
+      const res = await apiFetch(`/api/enrollments/${enrollmentId}/grade`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ grade }),
       });
       if (!res.ok) throw new Error();
@@ -84,9 +85,8 @@ export function GradesView({
     if (!enrollStudent || !selectedCourseId) return;
     setEnrolling(true);
     try {
-      const res = await fetch(`${API_URL}/api/enrollments`, {
+      const res = await apiFetch("/api/enrollments", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ student: enrollStudent, course: selectedCourseId }),
       });
       const data = await res.json();
@@ -106,7 +106,7 @@ export function GradesView({
   async function handleRemove(enrollmentId: string, studentName: string) {
     setRemovingId(enrollmentId);
     try {
-      const res = await fetch(`${API_URL}/api/enrollments/${enrollmentId}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/enrollments/${enrollmentId}`, { method: "DELETE" });
       if (!res.ok) throw new Error();
       setEnrollments((prev) => prev.filter((e) => e._id !== enrollmentId));
       toast(`${studentName} removed from course`, "success");
